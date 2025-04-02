@@ -114,8 +114,6 @@ If you find our work useful for your project, please consider citing the followi
 Special thanks to the following awesome projects!
 
 - [Gaussian-Splatting](https://github.com/graphdeco-inria/gaussian-splatting)
-- [DreamGaussian](https://github.com/ashawkey/diff-gaussian-rasterization)
-- [SparseNeRF](https://github.com/Wanggcong/SparseNeRF)
-- [MipNeRF-360](https://github.com/google-research/multinerf)
 - [FSGS](https://zehaozhu.github.io/FSGS/)
+- [DNGaussian](https://fictionarry.github.io/DNGaussian/)
 - [FlowFormer++](https://github.com/XiaoyuShi97/FlowFormerPlusPlus)
