@@ -114,8 +114,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         torchvision.utils.save_image(gt, os.path.join(gts_path, view.image_name + ".png"))
 
         if args.render_depth:
-            depth = 1.0 - (rendering['depth'] - rendering['depth'].min()) / (rendering['depth'].max() - rendering['depth'].min())
-            depth_est = (1 - depth * rendering["alpha"]).squeeze().cpu().numpy()
+            depth = (rendering['depth'] - rendering['depth'].min()) / (rendering['depth'].max() - rendering['depth'].min()) + 1 * (1 - rendering["alpha"])
+            depth_est = depth.squeeze().cpu().numpy()
             depth_map = visualize_cmap(depth_est, np.ones_like(depth_est), cm.get_cmap('turbo'), curve_fn=depth_curve_fn).copy()
             # depth_map = vis_depth(rendering['depth'][0].detach().cpu().numpy())
             np.save(os.path.join(render_path, view.image_name + '_depth.npy'), rendering['depth'][0].detach().cpu().numpy())
