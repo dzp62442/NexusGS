@@ -74,6 +74,14 @@ Taking LLFF as an example, the dataset folder structure is as follows:
 
 ### LLFF
 
+Download the model from Hugging Face ([link](https://huggingface.co/Yukinoo/NexusGS-llff)) and start training.
+
+```sh
+bash scripts/run_llff_hf.sh 0 
+```
+
+or
+
 Download LLFF dataset: [Link](https://drive.google.com/drive/folders/1cK3UDIJqKAAm7zyrxRYVFJ0BRMgrwhh4).
 
 Download the LLFF optical flow processed by [FlowFormer++](https://github.com/XiaoyuShi97/FlowFormerPlusPlus) from the [Link](https://drive.google.com/file/d/1DPr02s2wMznlNN0-qDOZRZohzmnnuanX/view?usp=drive_link).
@@ -94,6 +102,35 @@ TODO
 
 ```
 TODO
+```
+
+## Hugging Face
+
+The following code can be used to save the initial point cloud and camera parameters of the model.
+
+``` python
+# save pretrained
+from scene.hf_gaussian_model import HFGaussianModel
+model = HFGaussianModel(gaussians.get_xyz.shape[0], scene.cameras_extent)
+model.load_from_gaussian_model(gaussians, scene)
+for name, param in model.named_parameters():
+    print(name, param.shape)
+model.save_pretrained("hf_models/NexusGS-llff/fern")
+```
+
+We provide a script to load the model from Hugging Face and directly start training.
+
+```sh
+bash scripts/run_llff_hf.sh 0 
+```
+
+If you choose to download the model automatically, set `source_path` to the model repository name, e.g., `Yukinoo/NexusGS-llff`, and optionally specify the branch using `revision`, e.g., `fern`. If you're using a local model, simply set `source_path` to the local path of the model, e.g., `./hf_models/NexusGS-llff/fern`.
+
+Alternatively, the following code can be used to manually load and utilize the model.
+
+```python
+from scene.hf_gaussian_model import HFGaussianModel
+model = HFGaussianModel.from_pretrained("Yukinoo/NexusGS-llff", revision="fern")
 ```
 
 ## Citation

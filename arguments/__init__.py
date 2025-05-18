@@ -60,6 +60,8 @@ class ModelParams(ParamGroup):
         self.drop_rate = 1.
         self.dataset_type = 'llff'
         self.near_n = 1
+        self.huggingface = False
+        self.revision = "main"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

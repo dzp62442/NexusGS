@@ -21,7 +21,7 @@ from random import randint
 from utils.loss_utils import l1_loss, l1_loss_mask, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene, HFScene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -61,8 +61,10 @@ def training(dataset, opt, pipe, args):
     ema_loss_for_log = 0.0
 
     gaussians = GaussianModel(args)
-    scene = Scene(args, gaussians, shuffle=False)
-            
+    if args.huggingface:
+        scene = HFScene(args, gaussians, shuffle=False)
+    else:
+        scene = Scene(args, gaussians, shuffle=False)
 
     gaussians.training_setup(opt)
     torch.cuda.empty_cache()

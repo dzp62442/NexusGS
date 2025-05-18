@@ -10,7 +10,7 @@
 #
 import matplotlib.pyplot as plt
 import torch
-from scene import Scene
+from scene import Scene, HFScene
 import os
 from tqdm import tqdm
 import numpy as np
@@ -174,7 +174,10 @@ def render_video(source_path, model_path, iteration, views, gaussians, pipeline,
 
 def render_sets(dataset : ModelParams, pipeline : PipelineParams, args):
     gaussians = GaussianModel(args)
-    scene = Scene(args, gaussians, load_iteration=args.iteration, shuffle=False)
+    if args.huggingface:
+        scene = HFScene(args, gaussians, load_iteration=args.iteration, shuffle=False)
+    else:
+        scene = Scene(args, gaussians, load_iteration=args.iteration, shuffle=False)
     with torch.no_grad():
         #gaussians = GaussianModel(args)
         #scene = Scene(args, gaussians, load_iteration=args.iteration, shuffle=False)

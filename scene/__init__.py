@@ -17,11 +17,13 @@ import numpy as np
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
+from scene.hf_gaussian_model import HFGaussianModel
 from arguments import ModelParams
-from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON, cameraList_from_huggingfaceModel
 from utils.pose_utils import generate_random_poses_llff, generate_random_poses_360
 # from gaussian_renderer import render
 from utils.flow_utils import compute_depth_by_flow, construct_pcd
+from utils.graphics_utils import BasicPointCloud
 import torch
 
 class Scene:
@@ -95,8 +97,8 @@ class Scene:
         else:
             for resolution_scale in resolution_scales:
                 compute_depth_by_flow(self.train_cameras[resolution_scale], args.valid_dis_threshold, args.near_n)
-            pcd = construct_pcd(self.train_cameras[1.0])
-            self.gaussians.create_from_pcd(pcd, None, self.cameras_extent, args.drop_rate)
+            self.pcd = construct_pcd(self.train_cameras[1.0])
+            self.gaussians.create_from_pcd(self.pcd, None, self.cameras_extent, args.drop_rate)
     
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
@@ -110,4 +112,56 @@ class Scene:
     
     def getEvalCameras(self, scale=1.0):
         return self.eval_cameras[scale]
-        
+
+
+class HFScene:
+
+    gaussians : GaussianModel
+
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+        """b
+        :param path: Path to colmap scene main folder.
+        """
+        self.model_path = args.model_path
+        self.loaded_iter = load_iteration
+        self.gaussians = gaussians
+
+        self.train_cameras = {}
+        self.test_cameras = {}
+        self.pseudo_cameras = {}
+        self.eval_cameras = {}
+
+        model = HFGaussianModel.from_pretrained(args.source_path, revision=args.revision)
+
+        self.cameras_extent = model.cameras_extent
+
+        print("Loading Training Cameras")
+        self.train_cameras[1.0] = cameraList_from_huggingfaceModel(args, model, "train")
+        print("Loading Test Cameras")
+        self.test_cameras[1.0] = cameraList_from_huggingfaceModel(args, model, "test")
+
+        points = model.points.data.cpu().numpy()
+        colors = model.colors.data.cpu().numpy()
+
+        if self.loaded_iter:
+            self.gaussians.load_ply(os.path.join(self.model_path,
+                                                           "point_cloud",
+                                                           "iteration_" + str(self.loaded_iter),
+                                                           "point_cloud.ply"))
+        else:
+            self.pcd = BasicPointCloud(points=points, colors=colors, normals=np.zeros_like(points))
+            self.gaussians.create_from_pcd(self.pcd, None, self.cameras_extent, args.drop_rate)
+
+    
+    def save(self, iteration):
+        point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
+        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+    
+    def getTrainCameras(self, scale=1.0):
+        return self.train_cameras[scale]
+
+    def getTestCameras(self, scale=1.0):
+        return self.test_cameras[scale]
+    
+    def getEvalCameras(self, scale=1.0):
+        return self.eval_cameras[scale]

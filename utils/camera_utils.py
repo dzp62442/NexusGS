@@ -87,6 +87,32 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args, pcd=None):
 
     return camera_list
 
+def cameraList_from_huggingfaceModel(args, model, prefix="train"):
+    camera_list = []
+
+    for idx, cam_info in tqdm((enumerate(getattr(model, prefix + "_cameras_config")))):
+        
+        R = np.asarray(cam_info["R"])
+        T = np.asarray(cam_info["T"])
+        K = np.asarray(cam_info["K"])
+        trans = np.asarray(cam_info["trans"])
+        bounds = np.asarray(cam_info["bounds"])
+
+        image = getattr(model, prefix + "_cam{}_original_image".format(str(idx).zfill(3))).data
+        alpha_mask = getattr(model, prefix + "_cam{}_alpha_mask".format(str(idx).zfill(3))).data
+
+        cam = Camera(colmap_id=cam_info["uid"], R=R, T=T, K=K,
+                  FoVx=cam_info["FoVx"], FoVy=cam_info["FoVy"],  image=image, gt_alpha_mask=alpha_mask,
+                  uid=cam_info["uid"], data_device=args.data_device, image_name=cam_info["image_name"],
+                  mask=alpha_mask, bounds=bounds, scale=cam_info["scale"], trans=trans)
+        
+        depth = getattr(model, prefix + "_cam{}_depth".format(str(idx).zfill(3))).data
+        depth_mask = getattr(model, prefix + "_cam{}_depth_mask".format(str(idx).zfill(3))).data
+        cam.set_flow_depth(depth, depth_mask)
+        camera_list.append(cam)
+
+    return camera_list
+
 def camera_to_JSON(id, camera : Camera):
     Rt = np.zeros((4, 4))
     Rt[:3, :3] = camera.R.transpose()

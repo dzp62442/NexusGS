@@ -2,7 +2,9 @@ export CUDA_VISIBLE_DEVICES=$1
 
 name=fern
 n=3
-dataset=dataset/nerf_llff_data/$name
+dataset=./hf_models/NexusGS-llff/$name
+# dataset=Yukinoo/NexusGS-llff
+revision=$name
 workspace=output/llff/$name/${n}_views
 iterations=30000
 dataset_type=llff
@@ -23,8 +25,10 @@ python train.py --source_path $dataset --model_path $workspace --eval --n_views 
     --valid_dis_threshold $valid_dis_threshold \
     --drop_rate $drop_rate \
     --near_n $near_n \
+    --huggingface \
+    --revision $revision
 
-python render.py --source_path $dataset  --model_path  $workspace --iteration 30000 --render_depth
+python render.py --source_path $dataset  --model_path  $workspace --iteration 30000 --render_depth --huggingface
 
 
 python metrics.py --source_path $dataset --model_path $workspace 
