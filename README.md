@@ -92,17 +92,9 @@ Run using the following script:
 sh scripts/run_llff.sh 0
 ```
 
-### DTU
+### DTU & MipNeRF-360
 
-```
-TODO
-```
-
-### MipNeRF-360
-
-```
-TODO
-```
+We provide the results on the DTU and MipNeRF-360 datasets in the [link](https://drive.google.com/file/d/1dUNtsBPTBE2-W0jg4LnPkNTEOiCuwtDK/view?usp=drive_link).
 
 ## Hugging Face
 
