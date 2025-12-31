@@ -41,7 +41,7 @@
 Tested on Ubuntu 18.04, CUDA 11.8, PyTorch 2.0.0
 
 ```bash
-conda env create -n nexus python=3.10
+conda create -n nexus python=3.10
 conda activate nexus
 ```
 
@@ -49,13 +49,14 @@ Install Pytorch
 
 ```bash
 pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1 --index-url https://download.pytorch.org/whl/cu118
+pip install -r requirements.txt
 ```
 
 Install submodules
 
 ```bash
-pip install submodules/diff-gaussian-rasterization-confidence
-pip install submodules/simple-knn
+pip install --no-build-isolation submodules/diff-gaussian-rasterization-confidence
+pip install --no-build-isolation submodules/simple-knn
 ```
 
 ## Running
