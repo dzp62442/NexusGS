@@ -15,7 +15,7 @@ import sys
 import matplotlib.pyplot as plt
 from PIL import Image
 import imageio
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, rotmat2qvec, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
@@ -48,6 +48,8 @@ class CameraInfo(NamedTuple):
     height: int
     mask: np.array
     bounds: np.array
+    depth: Optional[np.ndarray] = None
+    depth_mask: Optional[np.ndarray] = None
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -482,7 +484,63 @@ def readNerfSyntheticInfo(path, white_background, eval, n_views=0, llffhold=8, e
     return scene_info
 
 
+def _load_omniscene_block(block_dir: Path):
+    cams_npz = np.load(block_dir / "cams.npz", allow_pickle=True)
+    depth_metric = np.load(block_dir / "depth_metric.npy")
+    depth_valid = np.load(block_dir / "depth_valid.npy")
+    width = int(cams_npz["width"])
+    height = int(cams_npz["height"])
+    camera_infos = []
+    for idx, rel_path in enumerate(cams_npz["image_paths"]):
+        image_path = block_dir / str(rel_path)
+        image = Image.open(image_path).convert("RGB")
+        intr_norm = cams_npz["intrinsics"][idx]
+        K = intr_norm.copy()
+        K[0, :] *= width
+        K[1, :] *= height
+        K[2, :] = [0, 0, 1]
+        R = np.array(cams_npz["c2w"][idx][:3, :3], dtype=np.float32)
+        T = np.array(cams_npz["w2c"][idx][:3, 3], dtype=np.float32)
+        cam = CameraInfo(
+            uid=idx,
+            R=R,
+            T=T,
+            K=K,
+            FovY=focal2fov(K[1, 1], height),
+            FovX=focal2fov(K[0, 0], width),
+            image=image,
+            flow=[],
+            image_path=str(image_path),
+            image_name=str(cams_npz["image_names"][idx]),
+            width=width,
+            height=height,
+            mask=None,
+            bounds=None,
+            depth=depth_metric[idx],
+            depth_mask=depth_valid[idx],
+        )
+        camera_infos.append(cam)
+    return camera_infos
+
+
+def readOmniSceneSceneInfo(path, images, eval, n_views=0, dataset_type="omniscene"):
+    path = Path(path)
+    context_cams = _load_omniscene_block(path / "context")
+    target_cams = _load_omniscene_block(path / "target")
+    nerf_normalization = getNerfppNorm(context_cams)
+    scene_info = SceneInfo(
+        point_cloud=None,
+        train_cameras=context_cams,
+        test_cameras=target_cams,
+        eval_cameras=target_cams,
+        nerf_normalization=nerf_normalization,
+        ply_path="",
+    )
+    return scene_info
+
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "OmniScene": readOmniSceneSceneInfo,
 }

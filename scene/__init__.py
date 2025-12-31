@@ -50,7 +50,11 @@ class Scene:
         self.pseudo_cameras = {}
         self.eval_cameras = {}
 
-        if os.path.exists(os.path.join(args.source_path, "sparse")):
+        self.dataset_type = args.dataset_type
+
+        if args.dataset_type == "omniscene":
+            scene_info = sceneLoadTypeCallbacks["OmniScene"](args.source_path, args.images, args.eval, args.n_views, dataset_type=args.dataset_type)
+        elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.n_views, dataset_type=args.dataset_type)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
@@ -95,8 +99,9 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
-            for resolution_scale in resolution_scales:
-                compute_depth_by_flow(self.train_cameras[resolution_scale], args.valid_dis_threshold, args.near_n)
+            if args.dataset_type != "omniscene":
+                for resolution_scale in resolution_scales:
+                    compute_depth_by_flow(self.train_cameras[resolution_scale], args.valid_dis_threshold, args.near_n)
             self.pcd = construct_pcd(self.train_cameras[1.0])
             self.gaussians.create_from_pcd(self.pcd, None, self.cameras_extent, args.drop_rate)
     

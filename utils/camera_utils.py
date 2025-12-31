@@ -15,6 +15,7 @@ import cv2
 from tqdm import tqdm
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+import torch
 
 WARNED = False
 
@@ -72,11 +73,21 @@ def loadCam(args, id, cam_info, resolution_scale, pcd=None):
                 f[:, :, 0] = f[:, :, 0] / scale_x
                 f[:, :, 1] = f[:, :, 1] / scale_y
             flow.append((i, f))
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, K=K,
+    camera = Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, K=K,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY,  image=gt_image, gt_alpha_mask=loaded_mask,
                   uid=id, data_device=args.data_device, image_name=cam_info.image_name,
                   mask=mask, bounds=cam_info.bounds,
                   flow=flow)
+    depth = getattr(cam_info, "depth", None)
+    if depth is not None:
+        depth_tensor = torch.from_numpy(np.asarray(depth, dtype=np.float32)).unsqueeze(-1)
+        depth_mask = getattr(cam_info, "depth_mask", None)
+        if depth_mask is None:
+            mask_tensor = torch.ones_like(depth_tensor, dtype=torch.bool)
+        else:
+            mask_tensor = torch.from_numpy(np.asarray(depth_mask).astype(np.bool_)).unsqueeze(-1)
+        camera.set_flow_depth(depth_tensor, mask_tensor)
+    return camera
 
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args, pcd=None):
