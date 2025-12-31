@@ -52,7 +52,7 @@ def main():
     parser.add_argument("--valid-threshold", type=float, default=0.3)
     parser.add_argument("--bin-limit", type=int, default=None)
     parser.add_argument("--scene-indices", type=str, default=None, help="逗号分隔的索引（1-based）")
-    parser.add_argument("--iterations", type=int, default=30000)
+    parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--gpus", type=str, default="0")
     parser.add_argument("--skip-render", action="store_true")
     parser.add_argument("--skip-metrics", action="store_true")
