@@ -499,8 +499,12 @@ def _load_omniscene_block(block_dir: Path):
         K[0, :] *= width
         K[1, :] *= height
         K[2, :] = [0, 0, 1]
-        R = np.array(cams_npz["c2w"][idx][:3, :3], dtype=np.float32)
-        T = np.array(cams_npz["w2c"][idx][:3, 3], dtype=np.float32)
+        c2w = np.array(cams_npz["c2w"][idx], dtype=np.float32)
+        if c2w.shape != (4, 4):
+            raise ValueError(f"OmniScene c2w must have shape (4, 4), got {c2w.shape}")
+        w2c = np.linalg.inv(c2w).astype(np.float32)
+        R = w2c[:3, :3].T.copy()
+        T = w2c[:3, 3].copy()
         cam = CameraInfo(
             uid=idx,
             R=R,

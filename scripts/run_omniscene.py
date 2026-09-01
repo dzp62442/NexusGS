@@ -9,7 +9,11 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from comp_svfgs.dataset_omniscene import OmniSceneDataset
-from comp_svfgs.preprocess_omniscene import preprocess_scene, _parse_resolution  # type: ignore
+from comp_svfgs.preprocess_omniscene import (  # type: ignore
+    OMNISCENE_PREPROCESSED_FORMAT_VERSION,
+    _parse_resolution,
+    preprocess_scene,
+)
 
 
 def _load_meta(scene_dir: Path):
@@ -27,7 +31,8 @@ def ensure_scene_preprocessed(sample: dict, scene_dir: Path, resolution, valid_t
     if meta:
         res = meta.get("resolution", {})
         if (
-            meta.get("bin_token") == sample["bin_token"]
+            meta.get("format_version") == OMNISCENE_PREPROCESSED_FORMAT_VERSION
+            and meta.get("bin_token") == sample["bin_token"]
             and meta.get("mode") == mode
             and res.get("height") == resolution[0]
             and res.get("width") == resolution[1]

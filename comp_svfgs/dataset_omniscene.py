@@ -12,14 +12,12 @@ __all__ = ["OmniSceneDataset", "load_conditions", "load_info"]
 
 
 def load_info(info: dict) -> Tuple[str, np.ndarray, np.ndarray]:
-    """获取图像路径与外参."""
+    """获取图像路径及 OpenCV 相机与关键帧 LiDAR 坐标系之间的外参."""
     img_path = info["data_path"]
     c2w = np.array(info["sensor2lidar_transform"], dtype=np.float32)
-    lidar2cam_r = np.linalg.inv(info["sensor2lidar_rotation"])
-    lidar2cam_t = info["sensor2lidar_translation"] @ lidar2cam_r.T
-    w2c = np.eye(4, dtype=np.float32)
-    w2c[:3, :3] = lidar2cam_r.T
-    w2c[3, :3] = -lidar2cam_t
+    if c2w.shape != (4, 4):
+        raise ValueError(f"sensor2lidar_transform must have shape (4, 4), got {c2w.shape}")
+    w2c = np.linalg.inv(c2w).astype(np.float32)
     return img_path, c2w, w2c
 
 

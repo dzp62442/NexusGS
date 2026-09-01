@@ -10,6 +10,9 @@ from PIL import Image
 from .dataset_omniscene import OmniSceneDataset
 
 
+OMNISCENE_PREPROCESSED_FORMAT_VERSION = 2
+
+
 def _parse_resolution(res_str: str) -> Tuple[int, int]:
     if "x" not in res_str:
         raise ValueError("resolution 格式应为 HxW，例如 112x200")
@@ -95,6 +98,7 @@ def preprocess_scene(sample: Dict, scene_dir: Path, resolution: Tuple[int, int],
     target_info = _export_block(sample["target"], scene_dir / "target", resolution, valid_threshold)
 
     meta = {
+        "format_version": OMNISCENE_PREPROCESSED_FORMAT_VERSION,
         "bin_token": sample["bin_token"],
         "mode": mode,
         "resolution": {"height": resolution[0], "width": resolution[1]},
@@ -116,7 +120,12 @@ def preprocess_dataset(dataset: OmniSceneDataset, output_root: Path, resolution:
         scene_dir = output_root / scene_name
 
         meta = _load_meta(scene_dir)
-        if meta and meta.get("bin_token") == sample["bin_token"] and meta.get("mode") == dataset.mode:
+        if (
+            meta
+            and meta.get("format_version") == OMNISCENE_PREPROCESSED_FORMAT_VERSION
+            and meta.get("bin_token") == sample["bin_token"]
+            and meta.get("mode") == dataset.mode
+        ):
             res = meta.get("resolution", {})
             if res.get("height") == resolution[0] and res.get("width") == resolution[1] and meta.get("valid_threshold") == valid_threshold:
                 continue
