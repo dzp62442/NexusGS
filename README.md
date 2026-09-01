@@ -97,6 +97,16 @@ sh scripts/run_llff.sh 0
 
 We provide the results on the DTU and MipNeRF-360 datasets in the [link](https://drive.google.com/file/d/1dUNtsBPTBE2-W0jg4LnPkNTEOiCuwtDK/view?usp=drive_link).
 
+### OmniScene center150 (`comp_svfgs`)
+
+The `comp_svfgs` branch defaults to the validated OmniScene center150 protocol: one center bin for each of the 150 nuScenes validation scenes, with evaluation and cumulative training-time records at 1k, 5k, and 10k iterations.
+
+```bash
+python scripts/run_omniscene.py
+```
+
+Completed scenes and milestone checkpoints are resumed or skipped automatically. After all 150 scenes finish, aggregate metrics are written under `output/omniscene_results/center150/`. See [docs/OmniScene数据集实验文档.md](docs/OmniScene数据集实验文档.md) for validation rules, output layout, and parameter overrides.
+
 ## Hugging Face
 
 The following code can be used to save the initial point cloud and camera parameters of the model.

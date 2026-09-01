@@ -79,9 +79,15 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self.origin_xyz,
+            self.live_count,
+            self.confidence,
+            self.bg_color,
         )
 
     def restore(self, model_args, training_args):
+        if len(model_args) not in (12, 16):
+            raise ValueError(f"Unsupported Gaussian checkpoint format with {len(model_args)} fields")
         (self.active_sh_degree,
          self._xyz,
          self._features_dc,
@@ -93,11 +99,20 @@ class GaussianModel:
          xyz_gradient_accum,
          denom,
          opt_dict,
-         self.spatial_lr_scale) = model_args
+         self.spatial_lr_scale) = model_args[:12]
+        if len(model_args) == 16:
+            self.origin_xyz, self.live_count, self.confidence, self.bg_color = model_args[12:]
+        else:
+            # 兼容历史 checkpoint；这些辅助量过去未被保存，只能按当前高斯重建。
+            self.origin_xyz = self._xyz.detach().clone()
+            self.live_count = torch.zeros(
+                (self._xyz.shape[0], 1), dtype=torch.int, device=self._xyz.device
+            )
+            self.confidence = torch.ones_like(self._opacity)
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
-        # self.optimizer.load_state_dict(opt_dict)
+        self.optimizer.load_state_dict(opt_dict)
 
     @property
     def get_scaling(self):

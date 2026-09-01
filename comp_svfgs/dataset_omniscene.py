@@ -2,13 +2,118 @@ import os
 import os.path as osp
 import json
 import pickle as pkl
+import re
 from typing import List, Tuple
 
 import numpy as np
 import torch
 from PIL import Image
 
-__all__ = ["OmniSceneDataset", "load_conditions", "load_info"]
+__all__ = [
+    "CENTER150_FILENAME",
+    "CENTER150_SAMPLE_COUNT",
+    "OmniSceneDataset",
+    "load_center150_tokens",
+    "load_conditions",
+    "load_info",
+]
+
+
+CENTER150_FILENAME = "bins_center150_v1.json"
+CENTER150_SAMPLE_COUNT = 150
+BIN_TOKEN_PATTERN = re.compile(r"^scene([0-9a-f]+)_bin(\d+)$")
+
+
+def _load_json_object(path: str, description: str) -> dict:
+    if not osp.isfile(path):
+        raise FileNotFoundError(f"{description}不存在: {path}")
+    with open(path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+    if not isinstance(data, dict):
+        raise ValueError(f"{description}必须是 JSON object: {path}")
+    return data
+
+
+def _parse_bin_token(bin_token: str) -> Tuple[str, int]:
+    if not isinstance(bin_token, str):
+        raise ValueError(f"bin token 必须是字符串，实际为: {type(bin_token).__name__}")
+    match = BIN_TOKEN_PATTERN.fullmatch(bin_token)
+    if match is None:
+        raise ValueError(f"非法 bin token: {bin_token}")
+    return match.group(1), int(match.group(2))
+
+
+def _expected_center150_tokens(val_manifest: dict) -> List[str]:
+    """按 SVF-GS 的 lower-median 规则在内存中复算官方 center150。"""
+    all_bins = val_manifest.get("bins")
+    adjacent_bins = val_manifest.get("adjacent_bins")
+    if not isinstance(all_bins, list) or not isinstance(adjacent_bins, list):
+        raise ValueError("bins_val_3.2m.json 必须包含 list 字段 'bins' 和 'adjacent_bins'")
+    if len(adjacent_bins) != CENTER150_SAMPLE_COUNT:
+        raise ValueError(
+            f"OmniScene val 应包含 {CENTER150_SAMPLE_COUNT} 个场景，实际为 {len(adjacent_bins)}"
+        )
+
+    flattened_bins = [bin_token for scene_bins in adjacent_bins for bin_token in scene_bins]
+    if flattened_bins != all_bins:
+        raise ValueError("bins_val_3.2m.json 中 adjacent_bins 展平后与 bins 不完全一致")
+
+    selected_bins = []
+    selected_scenes = set()
+    for scene_index, scene_bins in enumerate(adjacent_bins):
+        if not isinstance(scene_bins, list) or not scene_bins:
+            raise ValueError(f"val 场景分组 {scene_index} 为空或格式错误")
+        parsed = [_parse_bin_token(bin_token) for bin_token in scene_bins]
+        scene_tokens = {scene_token for scene_token, _ in parsed}
+        bin_indices = [bin_index for _, bin_index in parsed]
+        if len(scene_tokens) != 1:
+            raise ValueError(f"val 场景分组 {scene_index} 混入了多个 scene token")
+        if bin_indices != list(range(len(scene_bins))):
+            raise ValueError(f"val 场景分组 {scene_index} 的 bin 序号不连续或未按序排列")
+
+        scene_token = next(iter(scene_tokens))
+        if scene_token in selected_scenes:
+            raise ValueError(f"val 清单含重复 scene token: {scene_token}")
+        selected_scenes.add(scene_token)
+        selected_bins.append(scene_bins[(len(scene_bins) - 1) // 2])
+
+    if len(selected_bins) != CENTER150_SAMPLE_COUNT or len(set(selected_bins)) != CENTER150_SAMPLE_COUNT:
+        raise ValueError("从 val 清单复算后未得到 150 个唯一中央 bin")
+    return selected_bins
+
+
+def load_center150_tokens(version_dir: str) -> List[str]:
+    """严格校验 SVF-GS 生成的 center150 清单后加载，不在本项目生成清单。"""
+    val_path = osp.join(version_dir, "bins_val_3.2m.json")
+    center150_path = osp.join(version_dir, CENTER150_FILENAME)
+    val_manifest = _load_json_object(val_path, "OmniScene val 清单")
+    center150_manifest = _load_json_object(center150_path, "SVF-GS center150 清单")
+
+    actual_tokens = center150_manifest.get("bins")
+    if not isinstance(actual_tokens, list):
+        raise ValueError(f"{CENTER150_FILENAME} 必须包含 list 字段 'bins'")
+    expected_tokens = _expected_center150_tokens(val_manifest)
+    if actual_tokens != expected_tokens:
+        mismatch_index = next(
+            (idx for idx, pair in enumerate(zip(actual_tokens, expected_tokens)) if pair[0] != pair[1]),
+            min(len(actual_tokens), len(expected_tokens)),
+        )
+        raise ValueError(
+            f"{CENTER150_FILENAME} 与 SVF-GS lower-median 规则不一致，"
+            f"首个差异索引为 {mismatch_index}"
+        )
+
+    bin_info_dir = osp.join(version_dir, "bin_infos_3.2m")
+    missing_infos = [
+        bin_token for bin_token in actual_tokens
+        if not osp.isfile(osp.join(bin_info_dir, f"{bin_token}.pkl"))
+    ]
+    if missing_infos:
+        preview = ", ".join(missing_infos[:3])
+        raise FileNotFoundError(
+            f"center150 有 {len(missing_infos)} 个 bin 缺少 bin info；前几个为: {preview}"
+        )
+    return list(actual_tokens)
 
 
 def load_info(info: dict) -> Tuple[str, np.ndarray, np.ndarray]:
@@ -104,20 +209,23 @@ class OmniSceneDataset:
         self.mode = mode
         self.resolution = resolution
         self.data_version = data_version
+        version_dir = osp.join(self.data_root, self.data_version)
 
         if mode == "train":
-            token_path = osp.join(self.data_root, self.data_version, "bins_train_3.2m.json")
+            token_path = osp.join(version_dir, "bins_train_3.2m.json")
             self.bin_tokens = json.load(open(token_path))["bins"]
         elif mode == "val":
-            token_path = osp.join(self.data_root, self.data_version, "bins_val_3.2m.json")
+            token_path = osp.join(version_dir, "bins_val_3.2m.json")
             tokens = json.load(open(token_path))["bins"]
             self.bin_tokens = tokens[:30000:3000][:10]
+        elif mode == "center150":
+            self.bin_tokens = load_center150_tokens(version_dir)
         elif mode == "test":
-            token_path = osp.join(self.data_root, self.data_version, "bins_val_3.2m.json")
+            token_path = osp.join(version_dir, "bins_val_3.2m.json")
             tokens = json.load(open(token_path))["bins"]
             self.bin_tokens = tokens[0::14][:2048]
         elif mode == "demo":
-            token_path = osp.join(self.data_root, self.data_version, "bins_val_3.2m.json")
+            token_path = osp.join(version_dir, "bins_val_3.2m.json")
             self.bin_tokens = json.load(open(token_path))["bins"][:12]
         else:
             raise ValueError(f"Unsupported mode: {mode}")

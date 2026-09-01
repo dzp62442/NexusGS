@@ -114,9 +114,10 @@ def preprocess_scene(sample: Dict, scene_dir: Path, resolution: Tuple[int, int],
 def preprocess_dataset(dataset: OmniSceneDataset, output_root: Path, resolution: Tuple[int, int], valid_threshold: float, limit: int = None):
     output_root.mkdir(parents=True, exist_ok=True)
     count = len(dataset) if limit is None else min(limit, len(dataset))
+    index_width = max(2, len(str(len(dataset))))
     for idx in range(count):
         sample = dataset[idx]
-        scene_name = f"{idx + 1:02d}_{sample['bin_token']}"
+        scene_name = f"{idx + 1:0{index_width}d}_{sample['bin_token']}"
         scene_dir = output_root / scene_name
 
         meta = _load_meta(scene_dir)
@@ -136,7 +137,12 @@ def preprocess_dataset(dataset: OmniSceneDataset, output_root: Path, resolution:
 def main():
     parser = argparse.ArgumentParser(description="预处理 OmniScene 数据集")
     parser.add_argument("--dataset-root", type=str, default="datasets/omniscene")
-    parser.add_argument("--mode", type=str, default="val", choices=["train", "val", "test", "demo"])
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="val",
+        choices=["train", "val", "center150", "test", "demo"],
+    )
     parser.add_argument("--resolution", type=str, default="112x200")
     parser.add_argument("--output-root", type=str, default="output/omniscene_preprocessed")
     parser.add_argument("--limit", type=int, default=None)
