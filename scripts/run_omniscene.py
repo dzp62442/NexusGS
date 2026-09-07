@@ -12,6 +12,10 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+# 指标回填必须在任何 torch 模块导入前屏蔽 GPU。
+if "--metrics-only" in sys.argv:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from comp_svfgs.dataset_omniscene import (  # noqa: E402
     CENTER150_SAMPLE_COUNT,
     OmniSceneDataset,
@@ -24,8 +28,13 @@ from comp_svfgs.preprocess_omniscene import (  # noqa: E402
 
 
 EXPERIMENT_FORMAT_VERSION = 1
-EVALUATION_FORMAT_VERSION = 1
+EVALUATION_FORMAT_VERSION = 2
+LEGACY_EVALUATION_FORMAT_VERSION = 1
+SUMMARY_FORMAT_VERSION = 2
 METRIC_KEYS = ("psnr", "ssim", "lpips", "l1")
+ALL_18_VIEW_GROUP = "all_18_views"
+NOVEL_12_VIEW_GROUP = "novel_12_views"
+NOVEL_VIEW_COUNT = 12
 MANAGED_TRAIN_ARGUMENTS = {
     "-s",
     "--source_path",
@@ -151,49 +160,236 @@ def ensure_scene_preprocessed(
         raise RuntimeError(f"预处理完成校验失败: {scene_dir}")
 
 
-def expected_target_image_names(scene_dir: Path) -> set[str]:
+def ordered_target_image_names(scene_dir: Path) -> list[str]:
     cameras_path = scene_dir / "target" / "cameras.json"
     if not cameras_path.is_file():
-        return set()
+        return []
     try:
         cameras = load_json(cameras_path).get("views")
-    except (json.JSONDecodeError, ValueError):
-        return set()
+    except (json.JSONDecodeError, OSError, ValueError):
+        return []
     if not isinstance(cameras, list):
-        return set()
-    names = {
+        return []
+    names = [
         f"{view['image_name']}.png"
         for view in cameras
         if isinstance(view, dict) and isinstance(view.get("image_name"), str)
-    }
-    return names if len(names) == len(cameras) else set()
+    ]
+    return names if len(names) == len(cameras) and len(set(names)) == len(names) else []
+
+
+def expected_target_image_names(scene_dir: Path) -> set[str]:
+    return set(ordered_target_image_names(scene_dir))
+
+
+def validate_metrics(metrics: object, description: str) -> dict:
+    if not isinstance(metrics, dict):
+        raise ValueError(f"{description} 缺少指标字典")
+    for key in METRIC_KEYS:
+        value = metrics.get(key)
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{description} 的指标 {key} 非法")
+    if metrics["lpips"] < 0.0 or metrics["l1"] < 0.0:
+        raise ValueError(f"{description} 的指标范围非法")
+    return metrics
+
+
+def evaluation_has_view_groups(record: dict) -> bool:
+    view_groups = record.get("view_groups")
+    if not isinstance(view_groups, dict):
+        return False
+    all_group = view_groups.get(ALL_18_VIEW_GROUP)
+    novel_group = view_groups.get(NOVEL_12_VIEW_GROUP)
+    if not isinstance(all_group, dict) or not isinstance(novel_group, dict):
+        return False
+    try:
+        validate_metrics(all_group.get("metrics"), ALL_18_VIEW_GROUP)
+        validate_metrics(novel_group.get("metrics"), NOVEL_12_VIEW_GROUP)
+    except ValueError:
+        return False
+    return (
+        all_group.get("num_views") == record.get("num_views")
+        and novel_group.get("num_views") == NOVEL_VIEW_COUNT
+        and all_group["metrics"] == record.get("metrics")
+    )
 
 
 def load_evaluation(model_dir: Path, iteration: int, expected_num_views: int) -> dict:
     evaluation_path = model_dir / "evaluation" / f"iteration_{iteration}.json"
     record = load_json(evaluation_path)
     if (
-        record.get("format_version") != EVALUATION_FORMAT_VERSION
+        record.get("format_version")
+        not in (LEGACY_EVALUATION_FORMAT_VERSION, EVALUATION_FORMAT_VERSION)
         or record.get("iteration") != iteration
         or record.get("split") != "test"
         or record.get("num_views") != expected_num_views
     ):
         raise ValueError(f"评估记录元数据不匹配: {evaluation_path}")
-    metrics = record.get("metrics")
-    if not isinstance(metrics, dict):
-        raise ValueError(f"评估记录缺少 metrics: {evaluation_path}")
-    for key in METRIC_KEYS:
-        value = metrics.get(key)
-        if not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError(f"评估指标 {key} 非法: {evaluation_path}")
-    if metrics["lpips"] < 0.0 or metrics["l1"] < 0.0:
-        raise ValueError(f"评估指标范围非法: {evaluation_path}")
+    validate_metrics(record.get("metrics"), str(evaluation_path))
+    if record.get("format_version") == EVALUATION_FORMAT_VERSION:
+        if not evaluation_has_view_groups(record):
+            raise ValueError(f"评估记录缺少完整视角分组: {evaluation_path}")
     training_time = record.get("training_time_seconds")
     if not isinstance(training_time, (int, float)) or not math.isfinite(training_time):
         raise ValueError(f"训练耗时非法: {evaluation_path}")
     if training_time < 0.0:
         raise ValueError(f"训练耗时为负数: {evaluation_path}")
     return record
+
+
+def compute_png_metrics_cpu(
+    render_dir: Path,
+    gt_dir: Path,
+    image_names: list[str],
+    lpips_metric,
+    batch_size: int,
+) -> dict[str, float]:
+    import torch
+    from PIL import Image
+    from torchvision.transforms.functional import to_tensor
+
+    from utils.loss_utils import ssim
+
+    if not image_names:
+        raise ValueError("CPU 指标计算没有输入图像")
+    renders = []
+    ground_truths = []
+    for image_name in image_names:
+        with Image.open(render_dir / image_name) as image:
+            renders.append(to_tensor(image.convert("RGB")))
+        with Image.open(gt_dir / image_name) as image:
+            ground_truths.append(to_tensor(image.convert("RGB")))
+    renders = torch.stack(renders)
+    ground_truths = torch.stack(ground_truths)
+
+    with torch.inference_mode():
+        l1_value = torch.abs(renders - ground_truths).flatten(1).mean(1).mean()
+        mse_values = ((renders - ground_truths) ** 2).flatten(1).mean(1)
+        psnr_value = (20 * torch.log10(1.0 / torch.sqrt(mse_values))).mean()
+        ssim_value = ssim(renders, ground_truths)
+
+        lpips_values = []
+        for start in range(0, len(image_names), batch_size):
+            render_batch = renders[start : start + batch_size]
+            gt_batch = ground_truths[start : start + batch_size]
+            render_features = lpips_metric.net(render_batch)
+            gt_features = lpips_metric.net(gt_batch)
+            layer_values = [
+                layer((render_feature - gt_feature) ** 2).mean((2, 3)).flatten()
+                for layer, render_feature, gt_feature in zip(
+                    lpips_metric.lin, render_features, gt_features
+                )
+            ]
+            lpips_values.append(torch.stack(layer_values).sum(0))
+        lpips_value = torch.cat(lpips_values).mean()
+
+    metrics = {
+        "psnr": psnr_value.item(),
+        "ssim": ssim_value.item(),
+        "lpips": lpips_value.item(),
+        "l1": l1_value.item(),
+    }
+    return validate_metrics(metrics, "CPU PNG 指标")
+
+
+def backfill_missing_view_groups(
+    dataset: OmniSceneDataset,
+    output_root: Path,
+    results_root: Path,
+    eval_iterations: list[int],
+    experiment_fingerprint: str,
+    cpu_threads: int,
+    batch_size: int,
+) -> int:
+    tasks = []
+    touched_scenes = set()
+    for index, bin_token in enumerate(dataset.bin_tokens):
+        name = scene_name(index, len(dataset), bin_token)
+        scene_dir = output_root / name
+        model_dir = results_root / name
+        if not scene_complete(
+            scene_dir, model_dir, eval_iterations, experiment_fingerprint, bin_token
+        ):
+            continue
+        ordered_names = ordered_target_image_names(scene_dir)
+        if len(ordered_names) != 18:
+            raise RuntimeError(f"{name} 的 target 视图数不是 18")
+        for iteration in eval_iterations:
+            record = load_evaluation(model_dir, iteration, len(ordered_names))
+            if not evaluation_has_view_groups(record):
+                tasks.append(
+                    (index, bin_token, name, scene_dir, model_dir, iteration, ordered_names)
+                )
+
+    if not tasks:
+        print("[Metrics] 18 路与 12 路指标均已存在，无需回填")
+        return 0
+
+    import torch
+    from lpipsPyTorch import LPIPS
+
+    if cpu_threads <= 0 or batch_size <= 0:
+        raise ValueError("CPU 线程数和指标 batch size 必须为正数")
+    if "--metrics-only" in sys.argv and torch.cuda.is_available():
+        raise RuntimeError("--metrics-only 已要求屏蔽 GPU，但当前进程仍可访问 CUDA")
+    torch.set_num_threads(cpu_threads)
+    lpips_metric = LPIPS(net_type="vgg").cpu().eval()
+    print(
+        f"[Metrics] 使用 CPU 回填 {len(tasks)} 个里程碑的前 12 路新视角指标 "
+        f"(threads={cpu_threads}, batch={batch_size})"
+    )
+
+    for task_index, (
+        index,
+        bin_token,
+        name,
+        scene_dir,
+        model_dir,
+        iteration,
+        ordered_names,
+    ) in enumerate(tasks, 1):
+        evaluation_path = model_dir / "evaluation" / f"iteration_{iteration}.json"
+        record = load_evaluation(model_dir, iteration, len(ordered_names))
+        original_training_time = record["training_time_seconds"]
+        method_dir = model_dir / "test" / f"ours_{iteration}"
+        novel_metrics = compute_png_metrics_cpu(
+            method_dir / "renders",
+            method_dir / "gt",
+            ordered_names[:NOVEL_VIEW_COUNT],
+            lpips_metric,
+            batch_size,
+        )
+        all_metrics = dict(record["metrics"])
+        record["format_version"] = EVALUATION_FORMAT_VERSION
+        record["view_groups"] = {
+            ALL_18_VIEW_GROUP: {
+                "num_views": len(ordered_names),
+                "metrics": all_metrics,
+                "source": "training_in_memory",
+            },
+            NOVEL_12_VIEW_GROUP: {
+                "num_views": NOVEL_VIEW_COUNT,
+                "metrics": novel_metrics,
+                "source": "saved_png_cpu_postprocess",
+            },
+        }
+        if record["training_time_seconds"] != original_training_time:
+            raise RuntimeError(f"禁止修改已有训练耗时: {evaluation_path}")
+        atomic_write_json(evaluation_path, record)
+        touched_scenes.add((index, bin_token, name, scene_dir, model_dir))
+        if task_index % 25 == 0 or task_index == len(tasks):
+            print(f"[Metrics] {task_index}/{len(tasks)}")
+
+    for index, bin_token, name, scene_dir, model_dir in touched_scenes:
+        write_scene_completion(
+            scene_dir,
+            model_dir,
+            index + 1,
+            bin_token,
+            eval_iterations,
+            experiment_fingerprint,
+        )
+    return len(tasks)
 
 
 def milestone_complete(
@@ -513,6 +709,15 @@ def aggregate_center150(
             str(iteration): load_evaluation(model_dir, iteration, len(expected_names))
             for iteration in eval_iterations
         }
+        if not all(evaluation_has_view_groups(record) for record in evaluations.values()):
+            pending.append(
+                {
+                    "scene_index": index + 1,
+                    "bin_token": bin_token,
+                    "reason": "missing_view_group_metrics",
+                }
+            )
+            continue
         completed_records.append(
             {
                 "scene_index": index + 1,
@@ -540,17 +745,27 @@ def aggregate_center150(
         iteration_records = [
             record["evaluations"][str(iteration)] for record in completed_records
         ]
-        averages[str(iteration)] = {
-            key: sum(record["metrics"][key] for record in iteration_records) / len(iteration_records)
-            for key in METRIC_KEYS
+        view_group_averages = {
+            group_name: {
+                key: sum(
+                    record["view_groups"][group_name]["metrics"][key]
+                    for record in iteration_records
+                )
+                / len(iteration_records)
+                for key in METRIC_KEYS
+            }
+            for group_name in (ALL_18_VIEW_GROUP, NOVEL_12_VIEW_GROUP)
         }
+        # 顶层指标继续表示原有 18 路均值，保持旧分析脚本兼容。
+        averages[str(iteration)] = dict(view_group_averages[ALL_18_VIEW_GROUP])
+        averages[str(iteration)]["view_groups"] = view_group_averages
         averages[str(iteration)]["training_time_seconds"] = (
             sum(record["training_time_seconds"] for record in iteration_records)
             / len(iteration_records)
         )
 
     summary = {
-        "format_version": EXPERIMENT_FORMAT_VERSION,
+        "format_version": SUMMARY_FORMAT_VERSION,
         "subset": "center150",
         "num_samples": len(completed_records),
         "eval_iterations": eval_iterations,
@@ -561,15 +776,17 @@ def aggregate_center150(
 
     lines = [
         "OmniScene center150 汇总（150 个样本等权平均）",
-        "iteration  PSNR       SSIM       LPIPS     L1         train_time_seconds",
+        "iteration  view_group      PSNR       SSIM       LPIPS     L1         train_time_seconds",
     ]
     for iteration in eval_iterations:
         record = averages[str(iteration)]
-        lines.append(
-            f"{iteration:<10d} {record['psnr']:<10.6f} {record['ssim']:<10.6f} "
-            f"{record['lpips']:<10.6f} {record['l1']:<10.6f} "
-            f"{record['training_time_seconds']:.3f}"
-        )
+        for group_name in (ALL_18_VIEW_GROUP, NOVEL_12_VIEW_GROUP):
+            metrics = record["view_groups"][group_name]
+            lines.append(
+                f"{iteration:<10d} {group_name:<15s} {metrics['psnr']:<10.6f} "
+                f"{metrics['ssim']:<10.6f} {metrics['lpips']:<10.6f} "
+                f"{metrics['l1']:<10.6f} {record['training_time_seconds']:.3f}"
+            )
     atomic_write_text(results_root / "center150_metrics_summary.txt", "\n".join(lines) + "\n")
     print(f"[Summary] {results_root / 'center150_metrics_summary.json'}")
     return True
@@ -599,6 +816,15 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--position-lr-max-steps", type=int, default=None)
     parser.add_argument("--gpus", default="0")
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument(
+        "--metrics-only",
+        action="store_true",
+        help="仅用已保存的 PNG 在 CPU 上补算/汇总指标，绝不启动训练",
+    )
+    parser.add_argument(
+        "--metrics-cpu-threads", type=int, default=min(12, os.cpu_count() or 1)
+    )
+    parser.add_argument("--metrics-batch-size", type=int, default=4)
     args, train_overrides = parser.parse_known_args()
     if train_overrides and train_overrides[0] == "--":
         train_overrides = train_overrides[1:]
@@ -650,6 +876,32 @@ def main() -> None:
     )
     indices = parse_scene_indices(args.scene_indices, len(dataset), args.bin_limit)
 
+    if args.metrics_only:
+        if train_overrides:
+            raise ValueError("--metrics-only 不接受 train.py 透传参数")
+        print(
+            "[Metrics-only] 仅执行 CPU 指标回填与汇总；"
+            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r}"
+        )
+        backfill_missing_view_groups(
+            dataset,
+            output_root,
+            results_root,
+            args.eval_iterations,
+            experiment_fingerprint,
+            args.metrics_cpu_threads,
+            args.metrics_batch_size,
+        )
+        if args.mode == "center150":
+            aggregate_center150(
+                dataset,
+                output_root,
+                results_root,
+                args.eval_iterations,
+                experiment_fingerprint,
+            )
+        return
+
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = args.gpus
     failures = []
@@ -678,6 +930,15 @@ def main() -> None:
             )
             print(f"[Failed] {index + 1}/{len(dataset)}: {error}", file=sys.stderr)
 
+    backfill_missing_view_groups(
+        dataset,
+        output_root,
+        results_root,
+        args.eval_iterations,
+        experiment_fingerprint,
+        args.metrics_cpu_threads,
+        args.metrics_batch_size,
+    )
     if args.mode == "center150":
         aggregate_center150(
             dataset,

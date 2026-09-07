@@ -39,7 +39,10 @@ from utils.sh_utils import eval_sh
 from torchvision.utils import save_image
 
 
-EVALUATION_FORMAT_VERSION = 1
+EVALUATION_FORMAT_VERSION = 2
+ALL_18_VIEW_GROUP = "all_18_views"
+NOVEL_12_VIEW_GROUP = "novel_12_views"
+NOVEL_VIEW_COUNT = 12
 
 
 def _atomic_write_json(path, payload):
@@ -383,6 +386,7 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test, psnr_test, ssim_test, lpips_test = 0.0, 0.0, 0.0, 0.0
+                per_view_metrics = []
                 is_full_test_eval = full_eval_metrics and config['name'] == 'test'
                 staging_dir = None
                 render_dir = None
@@ -404,7 +408,8 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
+                    _l1 = l1_loss(image, gt_image).mean().double()
+                    l1_test += _l1
 
                     _mask = None
                     _psnr = psnr(image, gt_image, _mask).mean().double()
@@ -414,6 +419,10 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
                     ssim_test += _ssim
                     lpips_test += _lpips
                     if is_full_test_eval:
+                        per_view_metrics.append(
+                            {"psnr": _psnr, "ssim": _ssim, "lpips": _lpips, "l1": _l1}
+                        )
+                    if is_full_test_eval:
                         save_image(image, os.path.join(render_dir, viewpoint.image_name + '.png'))
                         save_image(gt_image, os.path.join(gt_dir, viewpoint.image_name + '.png'))
                 psnr_test /= len(config['cameras'])
@@ -421,6 +430,23 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
                 lpips_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])
                 if is_full_test_eval:
+                    if len(per_view_metrics) < NOVEL_VIEW_COUNT:
+                        raise RuntimeError(
+                            f"test 视图少于 {NOVEL_VIEW_COUNT}，无法统计新视角指标"
+                        )
+                    all_metrics = {
+                        "psnr": psnr_test.item(),
+                        "ssim": ssim_test.item(),
+                        "lpips": lpips_test.item(),
+                        "l1": l1_test.item(),
+                    }
+                    novel_metrics = {
+                        key: (
+                            sum(record[key] for record in per_view_metrics[:NOVEL_VIEW_COUNT])
+                            / NOVEL_VIEW_COUNT
+                        ).item()
+                        for key in ("psnr", "ssim", "lpips", "l1")
+                    }
                     output_dir = os.path.join(args.model_path, 'test', f'ours_{iteration}')
                     if os.path.isdir(output_dir):
                         shutil.rmtree(output_dir)
@@ -430,11 +456,18 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
                         "iteration": iteration,
                         "split": "test",
                         "num_views": len(config['cameras']),
-                        "metrics": {
-                            "psnr": psnr_test.item(),
-                            "ssim": ssim_test.item(),
-                            "lpips": lpips_test.item(),
-                            "l1": l1_test.item(),
+                        "metrics": all_metrics,
+                        "view_groups": {
+                            ALL_18_VIEW_GROUP: {
+                                "num_views": len(config['cameras']),
+                                "metrics": dict(all_metrics),
+                                "source": "training_in_memory",
+                            },
+                            NOVEL_12_VIEW_GROUP: {
+                                "num_views": NOVEL_VIEW_COUNT,
+                                "metrics": novel_metrics,
+                                "source": "training_in_memory",
+                            },
                         },
                         "training_time_seconds": float(training_time_seconds),
                     }
@@ -445,6 +478,16 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
                     print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} SSIM {} LPIPS {} TRAIN_TIME {:.3f}s".format(
                         iteration, config['name'], l1_test, psnr_test, ssim_test,
                         lpips_test, training_time_seconds))
+                    print(
+                        "[ITER {}] Evaluating novel_12: L1 {:.7f} PSNR {:.7f} "
+                        "SSIM {:.7f} LPIPS {:.7f}".format(
+                            iteration,
+                            novel_metrics["l1"],
+                            novel_metrics["psnr"],
+                            novel_metrics["ssim"],
+                            novel_metrics["lpips"],
+                        )
+                    )
                 else:
                     print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} SSIM {} LPIPS {} ".format(
                         iteration, config['name'], l1_test, psnr_test, ssim_test, lpips_test))
@@ -457,6 +500,12 @@ def training_report(args, tb_writer, iteration, Ll1, loss, l1_loss, testing_iter
                         tb_writer.add_scalar(
                             config['name'] + '/training_time_seconds', training_time_seconds, iteration
                         )
+                        for metric_name, metric_value in novel_metrics.items():
+                            tb_writer.add_scalar(
+                                NOVEL_12_VIEW_GROUP + '/' + metric_name,
+                                metric_value,
+                                iteration,
+                            )
 
         if tb_writer:
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)

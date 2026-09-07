@@ -77,7 +77,12 @@ python scripts/run_omniscene.py --mode val
 <scene>/evaluation/iteration_<iter>.json
 ```
 
-结构化评估文件记录 18 个 target 视图上的 PSNR、SSIM、LPIPS、L1，以及到该里程碑为止的累计训练耗时。计时在 CUDA 同步后取值，并排除完整评估、PLY 保存和 checkpoint 写盘开销，因此不同里程碑反映的是优化本身的累计耗时，而不是评估图片与模型落盘耗时。
+结构化评估文件同时记录两组 PSNR、SSIM、LPIPS 和 L1：
+
+- `all_18_views`：全部 18 个 target 视图；
+- `novel_12_views`：`target/cameras.json` 中的前 12 个视图，即六个相机的两个相邻时刻新视角。
+
+评估文件还记录到该里程碑为止的累计训练耗时。计时在 CUDA 同步后取值，并排除完整评估、PLY 保存和 checkpoint 写盘开销，因此不同里程碑反映的是优化本身的累计耗时，而不是评估图片与模型落盘耗时。新实验在训练评估时直接产生两组指标。
 
 评估会保存并恢复 Torch CPU/CUDA 随机状态；对于 OmniScene，增加评估点不会额外跳过致密化步骤。
 
@@ -92,6 +97,14 @@ python scripts/run_omniscene.py --mode val
 checkpoint 包含高斯参数、优化器状态、致密化辅助状态、Python/Torch/CUDA 随机状态、剩余训练视角队列和累计训练耗时。场景完成标记与指标文件均采用临时文件加原子替换，避免中断时把半成品误判为完成。
 
 同一结果根目录会固定一份 `experiment_config.json`。数据清单、分辨率、迭代协议或透传训练参数发生变化时，必须指定新的 `--results-root`，以免混合不可比实验。
+
+对于旧版已完成实验，可以在不启动训练、不使用 GPU 的情况下，从已保存的 PNG 补算前 12 路指标并重新汇总：
+
+```bash
+python scripts/run_omniscene.py --metrics-only
+```
+
+`--metrics-only` 会在导入 Torch 前屏蔽 CUDA。它保留原有 18 路指标和 `training_time_seconds` 的原值，只补充缺失的 12 路新视角指标；再次运行时会快速跳过已补齐的记录。
 
 ## 自动汇总
 
@@ -108,7 +121,7 @@ center150_metrics_summary.json
 center150_metrics_summary.txt
 ```
 
-汇总对 150 个样本等权平均，分别报告 1k、5k、10k 时的 PSNR、SSIM、LPIPS、L1 和累计训练耗时。JSON 同时保留每个样本的原始记录，便于复核与后续统计。
+汇总对 150 个样本等权平均，分别报告 1k、5k、10k 时全部 18 路和前 12 路新视角的 PSNR、SSIM、LPIPS、L1，以及原有的累计训练耗时。JSON 同时保留每个样本的两组记录，便于复核与后续统计。
 
 ## 数据与相机约定
 

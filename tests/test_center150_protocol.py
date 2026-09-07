@@ -9,8 +9,13 @@ from comp_svfgs.dataset_omniscene import (
     load_center150_tokens,
 )
 from scripts.run_omniscene import (
+    ALL_18_VIEW_GROUP,
     EVALUATION_FORMAT_VERSION,
+    LEGACY_EVALUATION_FORMAT_VERSION,
+    NOVEL_12_VIEW_GROUP,
     aggregate_center150,
+    evaluation_has_view_groups,
+    load_evaluation,
     load_json,
     scene_complete,
     scene_name,
@@ -64,7 +69,7 @@ class Center150ProtocolTest(unittest.TestCase):
                 name = scene_name(index, len(dataset), bin_token)
                 scene_dir = output_root / name
                 model_dir = results_root / name
-                image_names = ["view_0.png", "view_1.png"]
+                image_names = [f"view_{view_index:02d}.png" for view_index in range(18)]
                 write_json(
                     scene_dir / "target" / "cameras.json",
                     {"views": [{"image_name": Path(name).stem} for name in image_names]},
@@ -87,11 +92,24 @@ class Center150ProtocolTest(unittest.TestCase):
                             "iteration": iteration,
                             "split": "test",
                             "num_views": len(image_names),
-                            "metrics": {
+                            "metrics": (all_metrics := {
                                 "psnr": float(index + iteration / 1_000),
                                 "ssim": 0.8 + index * 0.1,
                                 "lpips": 0.2 - index * 0.1,
                                 "l1": 0.1,
+                            }),
+                            "view_groups": {
+                                ALL_18_VIEW_GROUP: {
+                                    "num_views": len(image_names),
+                                    "metrics": dict(all_metrics),
+                                },
+                                NOVEL_12_VIEW_GROUP: {
+                                    "num_views": 12,
+                                    "metrics": {
+                                        **all_metrics,
+                                        "psnr": all_metrics["psnr"] + 1.0,
+                                    },
+                                },
                             },
                             "training_time_seconds": float(iteration / 10 + index),
                         },
@@ -127,12 +145,18 @@ class Center150ProtocolTest(unittest.TestCase):
             self.assertEqual(summary["num_samples"], 2)
             self.assertAlmostEqual(summary["averages"]["1000"]["psnr"], 1.5)
             self.assertAlmostEqual(
+                summary["averages"]["1000"]["view_groups"][NOVEL_12_VIEW_GROUP][
+                    "psnr"
+                ],
+                2.5,
+            )
+            self.assertAlmostEqual(
                 summary["averages"]["10000"]["training_time_seconds"], 1000.5
             )
 
             first_name = scene_name(0, len(dataset), dataset.bin_tokens[0])
             broken_render = (
-                results_root / first_name / "test" / "ours_1000" / "renders" / "view_0.png"
+                results_root / first_name / "test" / "ours_1000" / "renders" / "view_00.png"
             )
             broken_render.unlink()
             self.assertFalse(
@@ -144,6 +168,31 @@ class Center150ProtocolTest(unittest.TestCase):
                     dataset.bin_tokens[0],
                 )
             )
+
+    def test_legacy_evaluation_is_accepted_but_needs_view_group_backfill(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            model_dir = Path(temporary_dir)
+            training_time = 12.3456789
+            write_json(
+                model_dir / "evaluation" / "iteration_1000.json",
+                {
+                    "format_version": LEGACY_EVALUATION_FORMAT_VERSION,
+                    "iteration": 1_000,
+                    "split": "test",
+                    "num_views": 18,
+                    "metrics": {
+                        "psnr": 30.0,
+                        "ssim": 0.8,
+                        "lpips": 0.2,
+                        "l1": 0.05,
+                    },
+                    "training_time_seconds": training_time,
+                },
+            )
+
+            record = load_evaluation(model_dir, 1_000, 18)
+            self.assertFalse(evaluation_has_view_groups(record))
+            self.assertEqual(record["training_time_seconds"], training_time)
 
 
 if __name__ == "__main__":
