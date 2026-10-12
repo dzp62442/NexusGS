@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,7 @@ MANAGED_TRAIN_ARGUMENTS = {
     "--save_iterations",
     "--checkpoint_iterations",
     "--start_checkpoint",
+    "--disable_checkpoints",
     "--full_eval_metrics",
     "--eval",
 }
@@ -405,13 +407,6 @@ def milestone_complete(
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
         return False
 
-    required_files = (
-        model_dir / "point_cloud" / f"iteration_{iteration}" / "point_cloud.ply",
-        model_dir / f"chkpnt{iteration}.pth",
-    )
-    if not all(nonempty_file(path) for path in required_files):
-        return False
-
     method_dir = model_dir / "test" / f"ours_{iteration}"
     for subdir_name in ("renders", "gt"):
         subdir = method_dir / subdir_name
@@ -423,6 +418,12 @@ def milestone_complete(
         if not all(nonempty_file(subdir / name) for name in expected_names):
             return False
     return True
+
+
+def final_model_complete(model_dir: Path, final_iteration: int) -> bool:
+    return nonempty_file(
+        model_dir / "point_cloud" / f"iteration_{final_iteration}" / "point_cloud.ply"
+    )
 
 
 def scene_complete(
@@ -443,6 +444,9 @@ def scene_complete(
         or completion.get("bin_token") != bin_token
         or completion.get("eval_iterations") != eval_iterations
     ):
+        return False
+
+    if not final_model_complete(model_dir, eval_iterations[-1]):
         return False
 
     expected_names = expected_target_image_names(scene_dir)
@@ -486,15 +490,10 @@ def write_scene_completion(
     )
 
 
-def find_latest_checkpoint(model_dir: Path, total_iterations: int) -> tuple[int, Path] | None:
-    candidates = []
-    for checkpoint_path in model_dir.glob("chkpnt*.pth"):
-        suffix = checkpoint_path.stem.removeprefix("chkpnt")
-        if suffix.isdigit() and nonempty_file(checkpoint_path):
-            iteration = int(suffix)
-            if iteration <= total_iterations:
-                candidates.append((iteration, checkpoint_path))
-    return max(candidates, default=None, key=lambda item: item[0])
+def reset_incomplete_results(model_dir: Path) -> None:
+    if model_dir.exists():
+        shutil.rmtree(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
 
 
 def run_command(command: list[str], env: dict[str, str]) -> None:
@@ -576,7 +575,6 @@ def build_train_command(
     args,
     scene_dir: Path,
     model_dir: Path,
-    checkpoint: tuple[int, Path] | None,
     train_overrides: list[str],
 ) -> list[str]:
     command = [
@@ -603,14 +601,11 @@ def build_train_command(
         "--test_iterations",
         *map(str, args.eval_iterations),
         "--save_iterations",
-        *map(str, args.eval_iterations),
-        "--checkpoint_iterations",
-        *map(str, args.eval_iterations),
+        str(args.iterations),
+        "--disable_checkpoints",
         "--full_eval_metrics",
         "--eval",
     ]
-    if checkpoint is not None:
-        command.extend(["--start_checkpoint", str(checkpoint[1])])
     command.extend(train_overrides)
     return command
 
@@ -648,33 +643,19 @@ def process_scene(
         ensure_scene_preprocessed(
             sample, scene_dir, resolution, args.valid_threshold, args.mode
         )
-    model_dir.mkdir(parents=True, exist_ok=True)
+    if model_dir.exists():
+        print(f"[Restart] {name} 结果不完整，从头训练")
+    reset_incomplete_results(model_dir)
 
-    checkpoint = find_latest_checkpoint(model_dir, args.iterations)
     expected_names = expected_target_image_names(scene_dir)
-    if checkpoint is not None:
-        incomplete_saved_milestones = [
-            iteration
-            for iteration in args.eval_iterations
-            if iteration <= checkpoint[0]
-            and not milestone_complete(scene_dir, model_dir, iteration, expected_names)
-        ]
-        if incomplete_saved_milestones:
-            raise RuntimeError(
-                f"{name} 的 checkpoint {checkpoint[0]} 之前存在不完整里程碑: "
-                f"{incomplete_saved_milestones}。请将该场景结果移到备份目录后重跑。"
-            )
-    if checkpoint is None or checkpoint[0] < args.iterations:
-        if checkpoint is not None:
-            print(f"[Resume] {name} from iteration {checkpoint[0]}")
-        train_command = build_train_command(
-            args, scene_dir, model_dir, checkpoint, train_overrides
-        )
-        run_command(train_command, env)
+    train_command = build_train_command(args, scene_dir, model_dir, train_overrides)
+    run_command(train_command, env)
 
     for iteration in args.eval_iterations:
         if not milestone_complete(scene_dir, model_dir, iteration, expected_names):
             raise RuntimeError(f"{name} 的 iteration {iteration} 产物校验失败")
+    if not final_model_complete(model_dir, args.iterations):
+        raise RuntimeError(f"{name} 的最终 iteration {args.iterations} 权重缺失")
     write_scene_completion(
         scene_dir,
         model_dir,
@@ -683,6 +664,14 @@ def process_scene(
         args.eval_iterations,
         experiment_fingerprint,
     )
+    if not scene_complete(
+        scene_dir,
+        model_dir,
+        args.eval_iterations,
+        experiment_fingerprint,
+        bin_token,
+    ):
+        raise RuntimeError(f"{name} 的完成状态校验失败")
     print(f"[Done] {index + 1}/{len(dataset)} {bin_token}")
 
 

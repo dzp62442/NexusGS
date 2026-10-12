@@ -531,6 +531,11 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[50_00, 10_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument(
+        "--disable_checkpoints",
+        action="store_true",
+        help="禁用样本内 checkpoint；用于短时长、按完整场景重跑的实验",
+    )
+    parser.add_argument(
         "--full_eval_metrics",
         action="store_true",
         help="保存完整 test 渲染、结构化指标和不含评估开销的累计训练耗时",
@@ -539,7 +544,10 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     args.test_iterations = sorted(set(args.test_iterations))
     args.save_iterations = sorted(set(args.save_iterations + [args.iterations]))
-    args.checkpoint_iterations = sorted(set(args.checkpoint_iterations))
+    if args.disable_checkpoints:
+        args.checkpoint_iterations = []
+    else:
+        args.checkpoint_iterations = sorted(set(args.checkpoint_iterations))
 
     print(args.test_iterations)
 

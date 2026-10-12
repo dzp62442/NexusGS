@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from comp_svfgs.dataset_omniscene import (
     CENTER150_FILENAME,
@@ -14,9 +15,11 @@ from scripts.run_omniscene import (
     LEGACY_EVALUATION_FORMAT_VERSION,
     NOVEL_12_VIEW_GROUP,
     aggregate_center150,
+    build_train_command,
     evaluation_has_view_groups,
     load_evaluation,
     load_json,
+    reset_incomplete_results,
     scene_complete,
     scene_name,
     write_scene_completion,
@@ -75,11 +78,6 @@ class Center150ProtocolTest(unittest.TestCase):
                     {"views": [{"image_name": Path(name).stem} for name in image_names]},
                 )
                 for iteration in eval_iterations:
-                    (model_dir / "point_cloud" / f"iteration_{iteration}").mkdir(
-                        parents=True, exist_ok=True
-                    )
-                    (model_dir / "point_cloud" / f"iteration_{iteration}" / "point_cloud.ply").write_bytes(b"ply")
-                    (model_dir / f"chkpnt{iteration}.pth").write_bytes(b"checkpoint")
                     for subdir in ("renders", "gt"):
                         image_dir = model_dir / "test" / f"ours_{iteration}" / subdir
                         image_dir.mkdir(parents=True, exist_ok=True)
@@ -114,6 +112,14 @@ class Center150ProtocolTest(unittest.TestCase):
                             "training_time_seconds": float(iteration / 10 + index),
                         },
                     )
+                final_ply = (
+                    model_dir
+                    / "point_cloud"
+                    / f"iteration_{eval_iterations[-1]}"
+                    / "point_cloud.ply"
+                )
+                final_ply.parent.mkdir(parents=True, exist_ok=True)
+                final_ply.write_bytes(b"ply")
                 write_scene_completion(
                     scene_dir,
                     model_dir,
@@ -155,14 +161,43 @@ class Center150ProtocolTest(unittest.TestCase):
             )
 
             first_name = scene_name(0, len(dataset), dataset.bin_tokens[0])
+            first_scene_dir = output_root / first_name
+            first_model_dir = results_root / first_name
+            final_ply = (
+                first_model_dir
+                / "point_cloud"
+                / "iteration_10000"
+                / "point_cloud.ply"
+            )
+            final_ply.unlink()
+            self.assertFalse(
+                scene_complete(
+                    first_scene_dir,
+                    first_model_dir,
+                    eval_iterations,
+                    fingerprint,
+                    dataset.bin_tokens[0],
+                )
+            )
+            final_ply.write_bytes(b"ply")
+            self.assertTrue(
+                scene_complete(
+                    first_scene_dir,
+                    first_model_dir,
+                    eval_iterations,
+                    fingerprint,
+                    dataset.bin_tokens[0],
+                )
+            )
+
             broken_render = (
-                results_root / first_name / "test" / "ours_1000" / "renders" / "view_00.png"
+                first_model_dir / "test" / "ours_1000" / "renders" / "view_00.png"
             )
             broken_render.unlink()
             self.assertFalse(
                 scene_complete(
-                    output_root / first_name,
-                    results_root / first_name,
+                    first_scene_dir,
+                    first_model_dir,
                     eval_iterations,
                     fingerprint,
                     dataset.bin_tokens[0],
@@ -193,6 +228,43 @@ class Center150ProtocolTest(unittest.TestCase):
             record = load_evaluation(model_dir, 1_000, 18)
             self.assertFalse(evaluation_has_view_groups(record))
             self.assertEqual(record["training_time_seconds"], training_time)
+
+    def test_train_command_only_saves_final_weight_without_checkpoints(self):
+        args = SimpleNamespace(
+            iterations=10_000,
+            densify_until_iter=10_000,
+            position_lr_max_steps=10_000,
+            eval_iterations=[1_000, 5_000, 10_000],
+        )
+        command = build_train_command(
+            args,
+            Path("/prepared/scene"),
+            Path("/results/scene"),
+            [],
+        )
+
+        save_index = command.index("--save_iterations")
+        self.assertEqual(command[save_index + 1], "10000")
+        self.assertIn("--disable_checkpoints", command)
+        self.assertNotIn("--checkpoint_iterations", command)
+        self.assertNotIn("--start_checkpoint", command)
+        test_index = command.index("--test_iterations")
+        self.assertEqual(
+            command[test_index + 1 : test_index + 4],
+            ["1000", "5000", "10000"],
+        )
+
+    def test_incomplete_scene_results_are_reset_from_scratch(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            model_dir = Path(temporary_dir) / "scene"
+            stale_file = model_dir / "point_cloud" / "iteration_5000" / "point_cloud.ply"
+            stale_file.parent.mkdir(parents=True)
+            stale_file.write_bytes(b"stale")
+
+            reset_incomplete_results(model_dir)
+
+            self.assertTrue(model_dir.is_dir())
+            self.assertEqual(list(model_dir.iterdir()), [])
 
 
 if __name__ == "__main__":

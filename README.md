@@ -105,7 +105,7 @@ The `comp_svfgs` branch defaults to the validated OmniScene center150 protocol: 
 python scripts/run_omniscene.py
 ```
 
-Completed scenes and milestone checkpoints are resumed or skipped automatically. Per-scene and aggregate records report both all 18 target views and the first 12 novel views. Existing results can be backfilled without training or GPU access with `python scripts/run_omniscene.py --metrics-only`. After all 150 scenes finish, aggregate metrics are written under `output/omniscene_results/center150/`. See [docs/OmniScene数据集实验文档.md](docs/OmniScene数据集实验文档.md) for validation rules, output layout, and parameter overrides.
+Completed scenes are skipped automatically; incomplete scenes restart from scratch because each scene takes less than two minutes. The three evaluation milestones are retained, while only the final 10k point-cloud weights are saved and no per-scene checkpoints are produced. Per-scene and aggregate records report both all 18 target views and the first 12 novel views. Existing results can be backfilled without training or GPU access with `python scripts/run_omniscene.py --metrics-only`. After all 150 scenes finish, aggregate metrics are written under `output/omniscene_results/center150/`. See [docs/OmniScene数据集实验文档.md](docs/OmniScene数据集实验文档.md) for validation rules, output layout, and parameter overrides.
 
 ## Hugging Face
 

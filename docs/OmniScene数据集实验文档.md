@@ -67,34 +67,39 @@ python scripts/run_omniscene.py --mode val
 
 ## 里程碑评估与耗时
 
-每个里程碑都会生成：
+每个里程碑都会生成评估产物：
 
 ```text
-<scene>/point_cloud/iteration_<iter>/point_cloud.ply
-<scene>/chkpnt<iter>.pth
 <scene>/test/ours_<iter>/renders/*.png
 <scene>/test/ours_<iter>/gt/*.png
 <scene>/evaluation/iteration_<iter>.json
 ```
+
+仅在最终迭代保存重建权重：
+
+```text
+<scene>/point_cloud/iteration_10000/point_cloud.ply
+```
+
+不保存样本内 checkpoint，也不保存 1k/5k 的中间 PLY。
 
 结构化评估文件同时记录两组 PSNR、SSIM、LPIPS 和 L1：
 
 - `all_18_views`：全部 18 个 target 视图；
 - `novel_12_views`：`target/cameras.json` 中的前 12 个视图，即六个相机的两个相邻时刻新视角。
 
-评估文件还记录到该里程碑为止的累计训练耗时。计时在 CUDA 同步后取值，并排除完整评估、PLY 保存和 checkpoint 写盘开销，因此不同里程碑反映的是优化本身的累计耗时，而不是评估图片与模型落盘耗时。新实验在训练评估时直接产生两组指标。
+评估文件还记录到该里程碑为止的累计训练耗时。计时在 CUDA 同步后取值，并排除完整评估和最终 PLY 落盘开销，因此不同里程碑反映的是优化本身的累计耗时，而不是评估图片与模型落盘耗时。新实验在训练评估时直接产生两组指标。
 
 评估会保存并恢复 Torch CPU/CUDA 随机状态；对于 OmniScene，增加评估点不会额外跳过致密化步骤。
 
-## 断点续跑
+## 场景级断点续跑
 
-调度器按以下顺序恢复：
+调度器按以下规则处理：
 
-1. 若 `scene_complete.json` 与全部里程碑产物均通过校验，快速跳过该场景；
-2. 若场景未完成但存在里程碑 checkpoint，从最新 checkpoint 继续；
-3. 若没有 checkpoint，从头训练该场景。
+1. 若 `scene_complete.json`、最终 10k PLY 和全部三个里程碑评估产物均通过校验，快速跳过该场景；
+2. 若场景不完整，删除该场景的旧结果目录并从头训练；已生成的预处理缓存保留。
 
-checkpoint 包含高斯参数、优化器状态、致密化辅助状态、Python/Torch/CUDA 随机状态、剩余训练视角队列和累计训练耗时。场景完成标记与指标文件均采用临时文件加原子替换，避免中断时把半成品误判为完成。
+单样本训练时间较短，因此不提供样本内断点恢复。场景完成标记与指标文件均采用临时文件加原子替换，避免中断时把半成品误判为完成。
 
 同一结果根目录会固定一份 `experiment_config.json`。数据清单、分辨率、迭代协议或透传训练参数发生变化时，必须指定新的 `--results-root`，以免混合不可比实验。
 
